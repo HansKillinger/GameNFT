@@ -100,3 +100,4 @@ contract GameNFT is ERC721, ERC721Enumerable, Pausable, Ownable, Moderator,ERC72
         return super.supportsInterface(interfaceId);
     }
 }
+
