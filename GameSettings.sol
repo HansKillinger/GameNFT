@@ -1,177 +1,102 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.9;
 
+import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+import "@openzeppelin/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
+import "@openzeppelin/contracts/security/Pausable.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/utils/Strings.sol";
-import "@openzeppelin/contracts/utils/Base64.sol";
+import "@openzeppelin/contracts/token/ERC721/extensions/ERC721Burnable.sol";
+import "@openzeppelin/contracts/utils/Counters.sol";
 import "contracts/Moderator.sol";
 
-struct objClassSettings{
-    string className;
-    uint256[] features;
-    uint256[] minStats;
-    uint256[] maxStats;
-    uint256 maxMint;
-    uint256 price;
-    string imageURI;
-    string desc;
-}
-
-struct collectionSettings{
-    string name;
-    string desc;
-    string external_link;
-    string image;
-    string fee_recipient;
-    uint256 fee; // 100 = 1%
-}
-
 interface storageContractInterface{
-    function getObj(uint256 tokenId) external view returns (string memory name, uint256 classId, uint256 exp, uint256[] memory statsArray);
+    function createObj(uint256 tokenId, uint256 classId, string memory name) external;
 }
 
-contract GameSettings is Ownable, Moderator {
-    using Strings for uint256;
+interface settingsContractInterface{
+    function getMintSettings(uint256 classId) external view returns (uint256 maxMint, uint256 price);
+    function getCollectionURI() external view returns (string memory);
+    function createURI(uint256 tokenId) external view returns (string memory);
+}
 
+contract GameNFT is ERC721, ERC721Enumerable, Pausable, Ownable, Moderator,ERC721Burnable {
+    using Counters for Counters.Counter;
+
+    Counters.Counter private _tokenIdCounter;
+    
     address public storageContract;
-    mapping(uint256 statNum => string) private statNames;
-    mapping(uint256 featureNum => string) private featureNames;
-    mapping(uint256 classId => objClassSettings) private objSettings;
-    uint256 public numStats = 4;
-    string public collectionURI;
-    string public featuresName = "Ability";
-    collectionSettings public settings;
+    address public settingsContract;
+    mapping(uint256 classId => uint256 totalCount) public classMinted;
 
     storageContractInterface storageInterface;
+    settingsContractInterface settingsInterface;
 
+    constructor() ERC721("GameToken", "GAME") {
+        _tokenIdCounter.increment();
+        _pause();
+    }
 
-    function setContracts(address contractStorage) public onlyOwner {
+    function setContracts(address contractStorage, address contractSettings) public onlyOwner {
         storageContract = contractStorage;
+        settingsContract = contractSettings;
         storageInterface = storageContractInterface(storageContract);
+        settingsInterface = settingsContractInterface(settingsContract);
     }
 
-
-    function setObjSettings(uint256 classId, uint256 price, string memory className, uint256 maxMint, string memory imageURI,
-      string memory description, uint[] memory features, uint[] memory minStats, uint[] memory maxStats) public onlyMod {
-        objSettings[classId].className = className;
-        objSettings[classId].maxMint = maxMint;
-        objSettings[classId].price = price;
-        objSettings[classId].imageURI = imageURI;
-        objSettings[classId].desc = description;
-        setFeatures(classId, features);
-        setMaxStats(classId, maxStats);
-        setMinStats(classId, minStats);
+    function contractURI() public view returns (string memory) {
+        return settingsInterface.getCollectionURI();
     }
-
-
-    function getCollectionURI() public view returns (string memory){return collectionURI;}
-
-
-    function getObjStatsSettings(uint256 classId) public view returns(uint256, uint256[] memory, uint256[] memory){
-        return (numStats, getMinStats(classId), getMaxStats(classId));
-    }
-
-
-    function getMintSettings(uint256 classId) public view returns (uint256 maxMint, uint256 price){
-        return (objSettings[classId].maxMint, objSettings[classId].price);
-    }
-
-
-    function setMinStats(uint256 classId, uint[] memory minStats) public onlyMod {
-        require(minStats.length == numStats, "Incorrect Number of minStats");
-        objSettings[classId].minStats = new uint256[](numStats);
-        for(uint i=0;i<numStats;i++){objSettings[classId].minStats[i] = minStats[i];}
-    }
-
-
-    function setMaxStats(uint256 classId, uint[] memory maxStats) public onlyMod {
-        require(maxStats.length == numStats, "Incorrect Number of maxStats");
-        objSettings[classId].maxStats = new uint256[](numStats);
-        for(uint i=0;i<numStats;i++){objSettings[classId].maxStats[i] = maxStats[i];}
-    }
-
-
-    function setFeatures(uint256 classId, uint[] memory features) public onlyMod {
-        objSettings[classId].features = new uint256[](features.length);
-        for(uint256 i=0; i < features.length; i++){objSettings[classId].features[i] = features[i];}
-    }
-
-
-    function getMinStats(uint256 classId) public view returns (uint[] memory){
-        return objSettings[classId].minStats;
-    }
-
-
-    function getMaxStats(uint256 classId) public view returns (uint[] memory){
-        return objSettings[classId].maxStats;
-    }
-
-
-    function getFeatures(uint256 classId) public view returns (uint[] memory stats){
-        return objSettings[classId].features;
-    }
-
-
-    function setStatNames(string[] memory newNames) public onlyMod {
-        for(uint256 i=0; i < newNames.length; i++){statNames[i+1] = newNames[i];}
-    }
-
-
-    function setFeatureNames(string[] memory newNames) public onlyMod {
-        for(uint256 i=0; i < newNames.length; i++){featureNames[i+1] = newNames[i];}
-    }
-
-
-    function setnumStats(uint256 newNum) public onlyMod {numStats = newNum;}
-
-
-    function setCollectionMetadata(string memory name, string memory desc, string memory image, string memory external_link, uint256 fee_percent, string memory fee_recipient) public onlyOwner{
-          settings.name = name;
-          settings.desc = desc;
-          settings.image = image;
-          settings.external_link = external_link;
-          settings.fee = fee_percent * 100;
-          settings.fee_recipient = fee_recipient;
-          createCollectionURI();
-      }
     
-    
-    function createCollectionURI() private onlyOwner {
-            
-            bytes memory dataURI = abi.encodePacked(
-                '{',
-                    '"name": "', settings.name, '",',
-                    '"description": "', settings.desc, '",',
-                    '"image": "', settings.image, '",',
-                    '"external_link": "', settings.external_link, '",',
-                    '"seller_fee_basis_points": ', settings.fee.toString(), ',',
-                    '"fee_recipient": "', settings.fee_recipient, '"',
-                '}'
-            );
-            collectionURI = string(abi.encodePacked("data:application/json;base64,", Base64.encode(dataURI)));
-        }
+    function tokenURI(uint256 tokenId) public view override returns (string memory){
+        return settingsInterface.createURI(tokenId);
+    }
 
-    function createURI(uint256 tokenId) public view returns (string memory){
-            (string memory name, uint256 classId, uint256 exp, uint256[] memory stats) = storageInterface.getObj(tokenId);
-            uint256[] memory maxStats = getMaxStats(classId);
-            string memory attributes = string(abi.encodePacked('{"trait_type":"exp","value": ', exp.toString(),'},'));
-            bytes memory temp;
-            attributes = string.concat(attributes, string(temp));
-            for(uint i = 0;i<numStats;i++){
-                temp = abi.encodePacked('{"trait_type":"', statNames[i], '","value": ', stats[i].toString(), ',"max_value": ', maxStats[i].toString() ,'},');
-                attributes = string.concat(attributes, string(temp));
-                }
-            temp = abi.encodePacked('{"trait_type":"class","value": "', objSettings[classId].className,'"}');
-            attributes = string.concat(attributes, string(temp));
-            bytes memory dataURI = abi.encodePacked(
-                '{',
-                    '"name": "', name, '",',
-                    '"description": "', objSettings[classId].desc, '",',
-                    '"external_url": "', settings.external_link, '",',
-                    '"image": "', objSettings[classId].imageURI, '",',
-                    '"attributes":[', attributes, ']',        
-                '}'
-            );
-            return string(abi.encodePacked("data:application/json;base64,",Base64.encode(dataURI)));}
-    
+    function pause() public onlyOwner {
+        _pause();
+    }
+
+    function unpause() public onlyOwner {
+        _unpause();
+    }
+
+    function getMintSettings(uint256 classId) public view returns (uint256 maxMint, uint256 mintPrice){
+        return (settingsInterface.getMintSettings(classId));
+    }
+
+    function purchaseNFT(uint256 classId, string memory name) public payable {
+        (uint256 maxMint, uint256 mintPrice) = getMintSettings(classId);
+        require(maxMint > 0, "classID Doesn't Exist");
+        require(msg.value == mintPrice, "Incorrect Amount of Funds Sent");
+        require(classMinted[classId] < maxMint, "Max Already Minted for classId");
+        safeMint(msg.sender, classId, name);
+    }
+
+    function safeMint(address to, uint256 classId, string memory name) public onlyMod {
+        (uint256 maxMint,) = getMintSettings(classId);
+        require(classMinted[classId] < maxMint, "Max Mint for classId");
+        uint256 tokenId = _tokenIdCounter.current();
+        _tokenIdCounter.increment();
+        classMinted[classId] += 1;
+        storageInterface.createObj(tokenId, classId, name);
+        _safeMint(to, tokenId);
+    }
+
+    function _beforeTokenTransfer(address from, address to, uint256 tokenId, uint256 batchSize)
+        internal
+        whenNotPaused
+        override(ERC721, ERC721Enumerable)
+    {
+        super._beforeTokenTransfer(from, to, tokenId, batchSize);
+    }
+
+    // The following functions are overrides required by Solidity.
+
+    function supportsInterface(bytes4 interfaceId)
+        public
+        view
+        override(ERC721, ERC721Enumerable)
+        returns (bool)
+    {
+        return super.supportsInterface(interfaceId);
+    }
 }
